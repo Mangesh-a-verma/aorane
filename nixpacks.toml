@@ -3,13 +3,12 @@ nixPkgs = ["nodejs_20"]
 
 [phases.install]
 cmds = [
-  "npm install -g pnpm@10 --force",
-  "pnpm install --no-frozen-lockfile --ignore-scripts"
+  "npx --yes pnpm@10 install --no-frozen-lockfile --ignore-scripts"
 ]
 
 [phases.build]
 cmds = [
-  "pnpm --filter @workspace/api-server build"
+  "npx pnpm@10 --filter @workspace/api-server build"
 ]
 
 [start]
