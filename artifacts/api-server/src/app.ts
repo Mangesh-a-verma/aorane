@@ -9,6 +9,7 @@ const app: Express = express();
 const ALLOWED_ORIGINS = [
   /\.vercel\.app$/,
   /\.railway\.app$/,
+  /\.onrender\.com$/,
   /localhost/,
   /127\.0\.0\.1/,
   /replit\.dev$/,
