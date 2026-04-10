@@ -1,5 +1,6 @@
 {
-  "buildCommand": "npx --yes pnpm@10 install --no-frozen-lockfile --ignore-scripts && npx pnpm@10 --filter @workspace/business-portal build",
+  "installCommand": "npx --yes pnpm@10 install --no-frozen-lockfile --ignore-scripts",
+  "buildCommand": "npx pnpm@10 --filter @workspace/business-portal build",
   "outputDirectory": "dist/public",
   "framework": null,
   "rewrites": [
