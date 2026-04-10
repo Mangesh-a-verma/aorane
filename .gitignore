@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+.replit
+replit.nix
+.upm/
+.cache/
+.config/
+.local/
+coverage/
+.turbo/
