@@ -104,6 +104,34 @@ export const insuranceApiKeysTable = pgTable("insurance_api_keys", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const orgPaymentsTable = pgTable("org_payments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orgId: uuid("org_id").notNull().references(() => organizationsTable.id, { onDelete: "cascade" }),
+  plan: text("plan").notNull(),
+  seats: integer("seats").notNull().default(50),
+  amount: text("amount").notNull(),
+  currency: text("currency").notNull().default("INR"),
+  razorpayOrderId: text("razorpay_order_id"),
+  razorpayPaymentId: text("razorpay_payment_id"),
+  razorpaySubscriptionId: text("razorpay_subscription_id"),
+  paymentType: text("payment_type").notNull().default("one_time"),
+  autoRenew: boolean("auto_renew").notNull().default(false),
+  nextRenewalAt: timestamp("next_renewal_at", { withTimezone: true }),
+  status: text("status").notNull().default("pending"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const orgAnnouncementsTable = pgTable("org_announcements", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orgId: uuid("org_id").notNull().references(() => organizationsTable.id, { onDelete: "cascade" }),
+  title: text("title").notNull(),
+  body: text("body").notNull(),
+  type: text("type").notNull().default("announcement"),
+  sentCount: integer("sent_count").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const insertOrganizationSchema = createInsertSchema(organizationsTable).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertOrgAdminSchema = createInsertSchema(orgAdminsTable).omit({ id: true, createdAt: true, updatedAt: true });
 
@@ -112,3 +140,5 @@ export type InsertOrganization = z.infer<typeof insertOrganizationSchema>;
 export type OrgAdmin = typeof orgAdminsTable.$inferSelect;
 export type OrgMember = typeof orgMembersTable.$inferSelect;
 export type EnrollmentCode = typeof enrollmentCodesTable.$inferSelect;
+export type OrgPayment = typeof orgPaymentsTable.$inferSelect;
+export type OrgAnnouncement = typeof orgAnnouncementsTable.$inferSelect;
