@@ -109,7 +109,7 @@ export const api = {
 
   getBillingPlans: () => request<{ plans: Record<string, OrgPlan> }>("/business/billing/plans"),
 
-  getBillingSubscription: () => request<{ payment: Record<string, unknown> | null; org: Org; plans: Record<string, OrgPlan> }>("/business/billing/subscription"),
+  getBillingSubscription: () => request<{ payment: { plan: string; status: string; paymentType?: string; payment_type?: string; autoRenew?: boolean; auto_renew?: boolean; nextRenewalAt?: string; next_renewal_at?: string; expiresAt?: string; expires_at?: string } | null; org: Org; plans: Record<string, OrgPlan> }>("/business/billing/subscription"),
 
   createBillingOrder: (plan: string, billing: string) =>
     request<{ paymentId: string; razorpayOrderId: string | null; razorpayKeyId: string | null; amount: number; plan: string; planLabel: string; seats: number; isTestMode: boolean }>("/business/billing/order", { method: "POST", body: JSON.stringify({ plan, billing }) }),
