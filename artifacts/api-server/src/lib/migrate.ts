@@ -293,6 +293,344 @@ export async function runStartupMigrations(): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE(user_id, score_date)
     )`,
+
+    // ══════════════════════════════════════════════════════
+    // PLATFORM TABLES (Admin Panel + Push + Ads)
+    // ══════════════════════════════════════════════════════
+
+    // ── push_tokens ──────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS push_tokens (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── notifications ─────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS notifications (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      data JSONB,
+      is_read BOOLEAN NOT NULL DEFAULT FALSE,
+      read_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── announcements ─────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS announcements (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      image_url TEXT,
+      link_url TEXT,
+      target_plans TEXT[],
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      starts_at TIMESTAMPTZ,
+      ends_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── feature_flags ─────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS feature_flags (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      key TEXT NOT NULL UNIQUE,
+      label TEXT NOT NULL,
+      description TEXT,
+      is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      enabled_for_plans TEXT[],
+      config JSONB,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── ad_campaigns ──────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS ad_campaigns (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      ad_type TEXT NOT NULL DEFAULT 'direct',
+      title TEXT NOT NULL,
+      advertiser_name TEXT,
+      banner_url TEXT,
+      link_url TEXT,
+      target_plans TEXT[],
+      target_cities TEXT[],
+      target_age_min INTEGER,
+      target_age_max INTEGER,
+      status TEXT NOT NULL DEFAULT 'active',
+      priority INTEGER NOT NULL DEFAULT 1,
+      deal_amount NUMERIC(10,2),
+      impression_count INTEGER NOT NULL DEFAULT 0,
+      click_count INTEGER NOT NULL DEFAULT 0,
+      starts_at TIMESTAMPTZ,
+      ends_at TIMESTAMPTZ,
+      slide_position INTEGER DEFAULT 1,
+      target_screen TEXT DEFAULT 'dashboard',
+      google_ad_code TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── ad_impressions + ad_clicks ────────────────────────
+    `CREATE TABLE IF NOT EXISTS ad_impressions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      campaign_id UUID NOT NULL REFERENCES ad_campaigns(id) ON DELETE CASCADE,
+      user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+      user_plan TEXT,
+      platform TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS ad_clicks (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      campaign_id UUID NOT NULL REFERENCES ad_campaigns(id) ON DELETE CASCADE,
+      user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── admin_users ───────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS admin_users (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      full_name TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'admin',
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      last_login_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── admin_audit_logs ──────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS admin_audit_logs (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      admin_id UUID NOT NULL REFERENCES admin_users(id),
+      action TEXT NOT NULL,
+      target_type TEXT,
+      target_id TEXT,
+      details JSONB,
+      ip_address TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── ai_config ─────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS ai_config (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      feature TEXT NOT NULL UNIQUE,
+      label TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'nvidia',
+      model TEXT NOT NULL DEFAULT 'meta/llama-3.1-70b-instruct',
+      api_key TEXT,
+      system_prompt TEXT,
+      is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── company_settings (singleton, id=1) ────────────────
+    `CREATE TABLE IF NOT EXISTS company_settings (
+      id INTEGER PRIMARY KEY DEFAULT 1,
+      company_name TEXT NOT NULL DEFAULT 'AORANE Health',
+      company_logo_url TEXT,
+      tagline TEXT DEFAULT 'Your Health, In Your Hands',
+      website TEXT DEFAULT 'aorane.com',
+      support_phone TEXT,
+      support_email TEXT,
+      address TEXT,
+      primary_color TEXT DEFAULT '#0077B6',
+      accent_color TEXT DEFAULT '#00B896',
+      scorecard_show_qr BOOLEAN DEFAULT TRUE,
+      scorecard_show_blood_group BOOLEAN DEFAULT TRUE,
+      scorecard_show_bmi BOOLEAN DEFAULT TRUE,
+      scorecard_show_active_percent BOOLEAN DEFAULT TRUE,
+      scorecard_bg_gradient_from TEXT DEFAULT '#023E8A',
+      scorecard_bg_gradient_to TEXT DEFAULT '#1B998B',
+      report_header_text TEXT,
+      report_footer_text TEXT,
+      report_logo_url TEXT,
+      weekly_report_enabled BOOLEAN DEFAULT TRUE,
+      monthly_report_enabled BOOLEAN DEFAULT TRUE,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ══════════════════════════════════════════════════════
+    // BUSINESS / CORPORATE TABLES
+    // ══════════════════════════════════════════════════════
+
+    // ── organizations ─────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS organizations (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      name TEXT NOT NULL,
+      org_type TEXT NOT NULL DEFAULT 'corporate',
+      plan TEXT NOT NULL DEFAULT 'basic',
+      org_code TEXT NOT NULL UNIQUE,
+      contact_email TEXT NOT NULL,
+      contact_phone TEXT,
+      city TEXT,
+      state TEXT,
+      country_code TEXT NOT NULL DEFAULT 'IN',
+      gstin TEXT,
+      industry TEXT,
+      company_size TEXT,
+      hospital_type TEXT,
+      bed_count INTEGER,
+      nabh_accredited BOOLEAN NOT NULL DEFAULT FALSE,
+      gym_type TEXT,
+      member_count INTEGER,
+      irdai_license TEXT,
+      customer_base_size TEXT,
+      total_seats INTEGER NOT NULL DEFAULT 10,
+      used_seats INTEGER NOT NULL DEFAULT 0,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      is_verified BOOLEAN NOT NULL DEFAULT FALSE,
+      discount_pct INTEGER NOT NULL DEFAULT 0,
+      trial_ends_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── org_admins ────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS org_admins (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      full_name TEXT NOT NULL,
+      email TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'admin',
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      last_login_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── org_members ───────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS org_members (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role TEXT NOT NULL DEFAULT 'member',
+      enrolled_via_code TEXT,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── enrollment_codes ──────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS enrollment_codes (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      code TEXT NOT NULL UNIQUE,
+      plan_type TEXT NOT NULL DEFAULT 'basic',
+      total_seats INTEGER NOT NULL DEFAULT 10,
+      used_seats INTEGER NOT NULL DEFAULT 0,
+      validity_days INTEGER NOT NULL DEFAULT 365,
+      expires_at TIMESTAMPTZ,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── insurance_api_keys ────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS insurance_api_keys (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      key_hash TEXT NOT NULL UNIQUE,
+      key_prefix TEXT NOT NULL,
+      label TEXT,
+      last_used_at TIMESTAMPTZ,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── org_payments ──────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS org_payments (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      plan TEXT NOT NULL,
+      seats INTEGER NOT NULL DEFAULT 50,
+      amount TEXT NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'INR',
+      razorpay_order_id TEXT,
+      razorpay_payment_id TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      expires_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── org_announcements ─────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS org_announcements (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'announcement',
+      sent_count INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── languages (for multi-language support) ────────────
+    `CREATE TABLE IF NOT EXISTS languages (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      code TEXT NOT NULL UNIQUE,
+      name_en TEXT NOT NULL,
+      name_local TEXT NOT NULL,
+      direction TEXT NOT NULL DEFAULT 'ltr',
+      is_active BOOLEAN NOT NULL DEFAULT FALSE,
+      completion_pct INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ══════════════════════════════════════════════════════
+    // SEEDING: Default data for admin panel + platform
+    // ══════════════════════════════════════════════════════
+
+    // Seed default admin user (password: admin123)
+    `INSERT INTO admin_users (email, password_hash, full_name, role)
+     VALUES ('admin@aorane.com', '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9', 'AORANE Admin', 'superadmin')
+     ON CONFLICT (email) DO NOTHING`,
+
+    // Seed company settings singleton
+    `INSERT INTO company_settings (id, company_name, tagline, website, support_email, support_phone)
+     VALUES (1, 'AORANE Health', 'Your Health, In Your Hands', 'aorane.com', 'support@aorane.com', '+91-9999999999')
+     ON CONFLICT (id) DO NOTHING`,
+
+    // Seed default feature flags
+    `INSERT INTO feature_flags (key, label, description, is_enabled) VALUES
+      ('food_ai_scan',       'AI Food Scan',         'NVIDIA-powered food scanning', true),
+      ('stress_tracking',    'Stress Tracking',      'PPG + mood stress analysis', true),
+      ('period_tracker',     'Period Tracker',       'Menstrual cycle tracking', true),
+      ('family_health',      'Family Health',        'Family group health dashboard', true),
+      ('blood_donation',     'Blood Donation',       'Blood donor community', true),
+      ('wearable_sync',      'Wearable Sync',        'Google Fit / Samsung Health', false),
+      ('business_portal',    'Business Portal',      'Corporate wellness dashboard', true),
+      ('ai_health_coach',    'AI Health Coach',      'Personalized AI recommendations', true),
+      ('whatsapp_bot',       'WhatsApp Bot',         'WhatsApp health assistant', false),
+      ('razorpay_payments',  'Razorpay Payments',    'Live payment processing', false)
+     ON CONFLICT (key) DO NOTHING`,
+
+    // Seed default AI config
+    `INSERT INTO ai_config (feature, label, provider, model, is_enabled) VALUES
+      ('food_scan',    'Food Scan AI',       'nvidia', 'meta/llama-3.1-70b-instruct', true),
+      ('health_coach', 'Health Coach AI',    'nvidia', 'meta/llama-3.1-70b-instruct', true),
+      ('report_scan',  'Medical Report AI',  'nvidia', 'meta/llama-3.1-70b-instruct', true),
+      ('stress_ai',    'Stress Analysis AI', 'nvidia', 'meta/llama-3.1-70b-instruct', true)
+     ON CONFLICT (feature) DO NOTHING`,
+
+    // Seed supported Indian languages
+    `INSERT INTO languages (code, name_en, name_local, direction, is_active, completion_pct) VALUES
+      ('hi', 'Hindi',     'हिन्दी',   'ltr', true, 90),
+      ('en', 'English',   'English',  'ltr', true, 100),
+      ('ta', 'Tamil',     'தமிழ்',    'ltr', true, 60),
+      ('te', 'Telugu',    'తెలుగు',   'ltr', false, 20),
+      ('kn', 'Kannada',   'ಕನ್ನಡ',   'ltr', false, 20),
+      ('ml', 'Malayalam', 'മലയാളം',  'ltr', false, 10),
+      ('mr', 'Marathi',   'मराठी',    'ltr', false, 30),
+      ('gu', 'Gujarati',  'ગુજરાતી',  'ltr', false, 20),
+      ('bn', 'Bengali',   'বাংলা',    'ltr', false, 10),
+      ('pa', 'Punjabi',   'ਪੰਜਾਬੀ',  'ltr', false, 10)
+     ON CONFLICT (code) DO NOTHING`,
   ];
 
   let ok = 0; let fail = 0;
