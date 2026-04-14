@@ -45,6 +45,59 @@ export async function runStartupMigrations(): Promise<void> {
     `ALTER TABLE exercise_logs ADD COLUMN IF NOT EXISTS input_method TEXT DEFAULT 'manual'`,
     `ALTER TABLE exercise_logs ADD COLUMN IF NOT EXISTS notes TEXT`,
 
+    // ── food_items table (needed for food scan + food logs) ──────────────────
+    `CREATE TABLE IF NOT EXISTS food_items (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      food_name_en TEXT NOT NULL,
+      food_name_local JSONB,
+      category TEXT,
+      subcategory TEXT,
+      cuisine_type TEXT,
+      country_code TEXT NOT NULL DEFAULT 'IN',
+      region_code TEXT,
+      is_global BOOLEAN NOT NULL DEFAULT FALSE,
+      dietary_tags TEXT[],
+      calories NUMERIC(7,2) NOT NULL,
+      protein_g NUMERIC(6,2),
+      carbs_g NUMERIC(6,2),
+      fat_g NUMERIC(6,2),
+      fiber_g NUMERIC(6,2),
+      sugar_g NUMERIC(6,2),
+      sodium_mg NUMERIC(7,2),
+      potassium_mg NUMERIC(7,2),
+      calcium_mg NUMERIC(7,2),
+      iron_mg NUMERIC(6,2),
+      vitamin_c_mg NUMERIC(6,2),
+      vitamin_d_mcg NUMERIC(6,2),
+      serving_size_g NUMERIC(6,2),
+      serving_description TEXT,
+      barcode TEXT,
+      tags TEXT[],
+      is_verified BOOLEAN NOT NULL DEFAULT FALSE,
+      added_by_admin BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── food_scan_cache table (AI scan cache to save tokens) ─────────────────
+    `CREATE TABLE IF NOT EXISTS food_scan_cache (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      food_name_en TEXT NOT NULL UNIQUE,
+      ai_result JSONB NOT NULL,
+      food_item_id UUID REFERENCES food_items(id),
+      hit_count INTEGER NOT NULL DEFAULT 1,
+      last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── Add food_item_id FK to food_logs if missing ──────────────────────────
+    `ALTER TABLE food_logs ADD COLUMN IF NOT EXISTS food_item_id UUID REFERENCES food_items(id)`,
+    `ALTER TABLE food_logs ADD COLUMN IF NOT EXISTS photo_url TEXT`,
+    `ALTER TABLE food_logs ADD COLUMN IF NOT EXISTS ai_confidence NUMERIC(5,2)`,
+    `ALTER TABLE food_logs ADD COLUMN IF NOT EXISTS is_offline_entry BOOLEAN NOT NULL DEFAULT FALSE`,
+    `ALTER TABLE food_logs ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ`,
+    `ALTER TABLE food_logs ADD COLUMN IF NOT EXISTS quantity_description TEXT`,
+
     // ── Safe enum creation (DO $$ pattern prevents error if enum already exists) ──
     `DO $$ BEGIN CREATE TYPE stress_type AS ENUM ('ppg','mood','five_pillar'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
     `DO $$ BEGIN CREATE TYPE mood_type AS ENUM ('happy','neutral','stressed','sad'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
