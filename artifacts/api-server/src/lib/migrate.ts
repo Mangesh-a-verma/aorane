@@ -631,6 +631,21 @@ export async function runStartupMigrations(): Promise<void> {
       ('bn', 'Bengali',   'বাংলা',    'ltr', false, 10),
       ('pa', 'Punjabi',   'ਪੰਜਾਬੀ',  'ltr', false, 10)
      ON CONFLICT (code) DO NOTHING`,
+
+    // ══════════════════════════════════════════════════════
+    // ALTER TABLE: Add auto-subscription columns
+    // ══════════════════════════════════════════════════════
+    `ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS razorpay_subscription_id TEXT`,
+    `ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS payment_type TEXT NOT NULL DEFAULT 'one_time'`,
+    `ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS auto_renew BOOLEAN NOT NULL DEFAULT FALSE`,
+    `ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS next_renewal_at TIMESTAMPTZ`,
+
+    `ALTER TABLE payments ADD COLUMN IF NOT EXISTS razorpay_subscription_id TEXT`,
+
+    `ALTER TABLE org_payments ADD COLUMN IF NOT EXISTS razorpay_subscription_id TEXT`,
+    `ALTER TABLE org_payments ADD COLUMN IF NOT EXISTS payment_type TEXT NOT NULL DEFAULT 'one_time'`,
+    `ALTER TABLE org_payments ADD COLUMN IF NOT EXISTS auto_renew BOOLEAN NOT NULL DEFAULT FALSE`,
+    `ALTER TABLE org_payments ADD COLUMN IF NOT EXISTS next_renewal_at TIMESTAMPTZ`,
   ];
 
   let ok = 0; let fail = 0;
