@@ -45,6 +45,182 @@ export async function runStartupMigrations(): Promise<void> {
     `ALTER TABLE exercise_logs ADD COLUMN IF NOT EXISTS input_method TEXT DEFAULT 'manual'`,
     `ALTER TABLE exercise_logs ADD COLUMN IF NOT EXISTS notes TEXT`,
 
+    // ── Safe enum creation (DO $$ pattern prevents error if enum already exists) ──
+    `DO $$ BEGIN CREATE TYPE stress_type AS ENUM ('ppg','mood','five_pillar'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
+    `DO $$ BEGIN CREATE TYPE mood_type AS ENUM ('happy','neutral','stressed','sad'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
+    `DO $$ BEGIN CREATE TYPE payment_status AS ENUM ('pending','success','failed','refunded'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
+    `DO $$ BEGIN CREATE TYPE subscription_status AS ENUM ('active','expired','cancelled'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
+
+    // ── stress_logs table ────────────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS stress_logs (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      stress_type TEXT NOT NULL,
+      stress_score INTEGER NOT NULL,
+      mood TEXT,
+      heart_rate_avg INTEGER,
+      hrv_score NUMERIC(5,2),
+      sleep_hours NUMERIC(3,1),
+      food_quality_score INTEGER,
+      exercise_minutes INTEGER,
+      water_glasses INTEGER,
+      medicine_adherence NUMERIC(5,2),
+      pillars JSONB,
+      ai_insight TEXT,
+      is_offline_entry BOOLEAN NOT NULL DEFAULT FALSE,
+      synced_at TIMESTAMPTZ,
+      logged_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── period_logs table ────────────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS period_logs (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      start_date TEXT NOT NULL,
+      end_date TEXT,
+      cycle_length INTEGER,
+      symptoms TEXT[],
+      flow TEXT,
+      notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── medical_reports table ────────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS medical_reports (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      report_type TEXT NOT NULL,
+      report_date TEXT,
+      lab_name TEXT,
+      findings JSONB NOT NULL DEFAULT '{}',
+      critical_values JSONB,
+      ai_advice TEXT,
+      diet_recommendations TEXT[],
+      analyzed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── family_groups table ──────────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS family_groups (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      invite_code TEXT NOT NULL UNIQUE,
+      max_members INTEGER NOT NULL DEFAULT 4,
+      plan_id TEXT,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── family_members table ─────────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS family_members (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      group_id UUID NOT NULL REFERENCES family_groups(id) ON DELETE CASCADE,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role TEXT NOT NULL DEFAULT 'member',
+      joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── subscriptions table ──────────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS subscriptions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+      plan TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      source TEXT NOT NULL DEFAULT 'razorpay',
+      seats INTEGER NOT NULL DEFAULT 1,
+      amount_paid NUMERIC(10,2),
+      discount_pct INTEGER NOT NULL DEFAULT 0,
+      promo_code_used TEXT,
+      starts_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ,
+      cancelled_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── payments table ───────────────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS payments (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+      subscription_id UUID REFERENCES subscriptions(id),
+      razorpay_order_id TEXT,
+      razorpay_payment_id TEXT,
+      amount NUMERIC(10,2) NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'INR',
+      status TEXT NOT NULL DEFAULT 'pending',
+      plan TEXT NOT NULL,
+      seats INTEGER NOT NULL DEFAULT 1,
+      gateway_fee NUMERIC(8,2),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── promo_codes table ────────────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS promo_codes (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      code TEXT NOT NULL UNIQUE,
+      discount_pct INTEGER NOT NULL,
+      discount_type TEXT NOT NULL DEFAULT 'percent',
+      applicable_plans TEXT[],
+      usage_limit INTEGER,
+      used_count INTEGER NOT NULL DEFAULT 0,
+      is_lifetime_upgrade BOOLEAN NOT NULL DEFAULT FALSE,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      expires_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── plan_pricing table ───────────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS plan_pricing (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      plan_key TEXT NOT NULL UNIQUE,
+      display_name TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'individual',
+      monthly_price NUMERIC(10,2) NOT NULL DEFAULT 0,
+      yearly_price NUMERIC(10,2),
+      max_seats INTEGER,
+      features JSONB NOT NULL DEFAULT '[]',
+      badge_text TEXT,
+      badge_color TEXT DEFAULT '#0077B6',
+      gradient_colors JSONB,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
+    // ── Seed plan_pricing with default plans ─────────────────────────────────
+    `INSERT INTO plan_pricing (plan_key, display_name, type, monthly_price, yearly_price, max_seats, features, badge_text, badge_color, sort_order)
+     VALUES
+       ('free',   'Free',       'individual', 0,    null, 1, '["Basic health tracking","Food & water logs","Exercise logging"]', null, '#6B7280', 0),
+       ('pro',    'Pro',        'individual', 199,  1999, 1, '["Everything in Free","AI food scan","Health score","Medicine tracker","Stress tracking","Period tracker"]', 'Most Popular', '#0077B6', 1),
+       ('max',    'Max',        'individual', 399,  3999, 1, '["Everything in Pro","Family group (4 members)","Blood donation","Wearable sync","Priority support"]', 'Best Value', '#7C3AED', 2),
+       ('family', 'Family',     'family',     599,  5999, 6, '["6 family members","All Max features","Family health dashboard","Shared insights"]', 'For Families', '#DC2626', 3)
+     ON CONFLICT (plan_key) DO NOTHING`,
+
+    // ── blood_donors table (community feature) ────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS blood_donors (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+      blood_group TEXT NOT NULL,
+      city TEXT NOT NULL,
+      state TEXT NOT NULL,
+      country_code TEXT NOT NULL DEFAULT 'IN',
+      lat TEXT,
+      lng TEXT,
+      is_available BOOLEAN NOT NULL DEFAULT TRUE,
+      last_donated_at TEXT,
+      next_eligible_at TEXT,
+      donation_count INTEGER NOT NULL DEFAULT 0,
+      badges TEXT[],
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
     // daily_health_scores table (if not exists)
     `CREATE TABLE IF NOT EXISTS daily_health_scores (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
