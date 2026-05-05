@@ -2,32 +2,34 @@ import { Router } from "express";
 import { pool } from "@workspace/db";
 import { requireAuth } from "../../middlewares/user-auth";
 import type { AuthRequest } from "../../middlewares/user-auth";
-import { computeActivePercent } from "../../lib/scoring";
+import { getCumulativeActivePercent } from "../../lib/activityScore";
 
-// ── AORANE ID Generation (12 digits, immutable) ───────────────────────────────
-// Format: [G][AA][CCC][RRRRRR]
-//   G   = Gender code (1=Male, 2=Female, 3=Other/Prefer-not)
-//   AA  = Age at registration (00-99)
-//   CCC = City hash (100-999, derived from city name)
-//   RRRRRR = 6 random digits (100000-999999)
+// ── AORANE ID Generation (12 chars, alphanumeric uppercase, immutable) ────────
+// Format: [G][YY][CCC][XXXXXXX]
+//   G       = Gender letter  (M=Male, F=Female, O=Other)
+//   YY      = Last 2 digits of birth year (e.g. "98" for 1998)
+//   CCC     = First 3 uppercase letters of city name (e.g. "MUM" for Mumbai)
+//   XXXXXXX = 7 random chars from CAPS_ALPHANUM (no 0/O/I/1 to avoid confusion)
+//   Total   = 1+2+3+7 = 13 → trimmed to 12 to stay exact
+// Example: "M98MUM7K3XPQA" → "M98MUM7K3XPQ" (12 chars)
+const CAPS_ALPHANUM = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 32 safe chars
 function generateAoraneId(gender: string | null, dateOfBirth: string | null, city: string | null): string {
-  const gCode = gender === "male" ? "1" : gender === "female" ? "2" : "3";
-  const age = dateOfBirth
-    ? Math.min(99, Math.floor((Date.now() - new Date(dateOfBirth).getTime()) / (86400000 * 365.25)))
-    : 0;
-  const ageCode = String(age).padStart(2, "0");
-  const cityName = (city || "other").toLowerCase().replace(/[^a-z]/g, "");
-  const s = (cityName + "xxx").slice(0, 4);
-  const cityHash = ((s.charCodeAt(0) * 97 + s.charCodeAt(1) * 53 + s.charCodeAt(2) * 31 + s.charCodeAt(3) * 7) % 900) + 100;
-  const cityCode = String(cityHash).padStart(3, "0");
-  const random = String(Math.floor(Math.random() * 900000) + 100000);
-  return `${gCode}${ageCode}${cityCode}${random}`; // Total: 1+2+3+6 = 12 digits
+  const gCode = gender === "male" ? "M" : gender === "female" ? "F" : "O";
+  const dob = dateOfBirth ? new Date(dateOfBirth) : null;
+  const yearCode = dob && !isNaN(dob.getTime())
+    ? String(dob.getFullYear()).slice(-2)
+    : String(new Date().getFullYear()).slice(-2);
+  const cityName = (city || "OTH").toUpperCase().replace(/[^A-Z]/g, "");
+  const cityCode = (cityName + "OTH").slice(0, 3);
+  const randomPart = Array.from({ length: 7 }, () =>
+    CAPS_ALPHANUM[Math.floor(Math.random() * CAPS_ALPHANUM.length)]
+  ).join("");
+  return `${gCode}${yearCode}${cityCode}${randomPart}`.slice(0, 12); // exactly 12 chars
 }
 
 // ── Daily Active Percentage Calculation ───────────────────────────────────────
-// Uses scoring.ts scientific engine (WHO 2020 + ICMR 2024)
-async function calculateActivePercent(userId: string, date?: string) {
-  return computeActivePercent(userId, date);
+async function calculateActivePercent(userId: string) {
+  return getCumulativeActivePercent(userId);
 }
 
 const router = Router();
@@ -106,14 +108,20 @@ router.patch("/users/profile", requireAuth, async (req: AuthRequest, res) => {
 
     if (fields.length === 0) { res.json({ profile: null }); return; }
 
+    // UPSERT: create row if missing, else update existing fields
+    const colNames = fields.map((f) => f.split("=")[0]);
+    const colPlaceholders = colNames.map((_, i) => `$${i + 1}`).join(",");
+    const setClause = fields.join(",");
     vals.push(req.userId!);
     const result = await pool.query(
-      `UPDATE user_profiles SET ${fields.join(",")} WHERE user_id=$${idx} RETURNING *`,
+      `INSERT INTO user_profiles (user_id,${colNames.join(",")}) VALUES ($${idx},${colPlaceholders})
+       ON CONFLICT (user_id) DO UPDATE SET ${setClause} RETURNING *`,
       vals
     );
     res.json({ profile: result.rows[0] ?? null });
   } catch (e) {
-    res.status(500).json({ error: "Failed to update profile", detail: (e as Error).message });
+    const msg = (e as Error).message || String(e);
+    res.status(500).json({ error: "Failed to update profile", detail: msg });
   }
 });
 
@@ -123,7 +131,7 @@ router.patch("/users/onboarding/step", requireAuth, async (req: AuthRequest, res
     await pool.query(`UPDATE user_profiles SET onboarding_step=$1 WHERE user_id=$2`, [step, req.userId!]);
     res.json({ success: true, step });
   } catch (e) {
-    res.status(500).json({ error: "Failed to update onboarding step", detail: (e as Error).message });
+    res.status(500).json({ error: "Failed to update onboarding step" });
   }
 });
 
@@ -142,7 +150,7 @@ router.post("/users/medical-conditions", requireAuth, async (req: AuthRequest, r
     const saved = await pool.query(`SELECT * FROM user_medical_conditions WHERE user_id=$1`, [req.userId!]);
     res.json({ conditions: saved.rows });
   } catch (e) {
-    res.status(500).json({ error: "Failed to save conditions", detail: (e as Error).message });
+    res.status(500).json({ error: "Failed to save conditions" });
   }
 });
 
@@ -165,7 +173,7 @@ router.post("/users/health-goals", requireAuth, async (req: AuthRequest, res) =>
     );
     res.json({ goals: result.rows[0] });
   } catch (e) {
-    res.status(500).json({ error: "Failed to save goals", detail: (e as Error).message });
+    res.status(500).json({ error: "Failed to save goals" });
   }
 });
 
@@ -174,7 +182,7 @@ router.get("/users/preferences", requireAuth, async (req: AuthRequest, res) => {
     const r = await pool.query(`SELECT * FROM user_preferences WHERE user_id=$1`, [req.userId!]);
     res.json({ preferences: r.rows[0] ?? null });
   } catch (e) {
-    res.status(500).json({ error: "Failed to fetch preferences", detail: (e as Error).message });
+    res.status(500).json({ error: "Failed to fetch preferences" });
   }
 });
 
@@ -198,7 +206,7 @@ router.patch("/users/preferences", requireAuth, async (req: AuthRequest, res) =>
     const result = await pool.query(`UPDATE user_preferences SET ${fields.join(",")} WHERE user_id=$${idx} RETURNING *`, vals);
     res.json({ preferences: result.rows[0] ?? null });
   } catch (e) {
-    res.status(500).json({ error: "Failed to update preferences", detail: (e as Error).message });
+    res.status(500).json({ error: "Failed to update preferences" });
   }
 });
 
@@ -207,7 +215,7 @@ router.get("/users/privacy", requireAuth, async (req: AuthRequest, res) => {
     const r = await pool.query(`SELECT * FROM user_privacy_settings WHERE user_id=$1`, [req.userId!]);
     res.json({ privacy: r.rows[0] ?? null });
   } catch (e) {
-    res.status(500).json({ error: "Failed to fetch privacy settings", detail: (e as Error).message });
+    res.status(500).json({ error: "Failed to fetch privacy settings" });
   }
 });
 
@@ -231,7 +239,7 @@ router.patch("/users/privacy", requireAuth, async (req: AuthRequest, res) => {
     const result = await pool.query(`UPDATE user_privacy_settings SET ${fields.join(",")} WHERE user_id=$${idx} RETURNING *`, vals);
     res.json({ privacy: result.rows[0] ?? null });
   } catch (e) {
-    res.status(500).json({ error: "Failed to update privacy settings", detail: (e as Error).message });
+    res.status(500).json({ error: "Failed to update privacy settings" });
   }
 });
 
@@ -247,7 +255,7 @@ router.get("/users/scorecard", requireAuth, async (req: AuthRequest, res) => {
     const profile = profileRes.rows[0] ?? null;
 
     // Generate and save AORANE ID if missing
-    let aoraneId = profile?.aorane_id;
+    let aoraneId = profile?.aorane_id ? (profile.aorane_id as string).toUpperCase() : null;
     if (!aoraneId) {
       let generated = "";
       for (let i = 0; i < 5; i++) {
@@ -275,14 +283,12 @@ router.get("/users/scorecard", requireAuth, async (req: AuthRequest, res) => {
       : null;
 
     const activeData = await calculateActivePercent(uid).catch(() => ({
-      overall: 0, foodPct: 0, waterPct: 0, exercisePct: 0, medicinePct: 0,
-      sleepPct: 50, bmiScore: 50, grade: "—", gradeLabel: "No data yet",
-      breakdown: { food: 0, water: 0, exerciseMetMin: 0, medicine: 0, sleepHours: 0 }
+      pct: 0, todayPct: 0, weekPct: 0, daysTracked: 0, trend: "stable" as const,
     }));
 
     res.json({
       aoraneId,
-      name: profile?.full_name || "AORANE User",
+      name: profile?.full_name || "Aorane User",
       bloodGroup: profile?.blood_group || "Unknown",
       bmi: bmi || "N/A",
       bmiCategory,
@@ -294,34 +300,34 @@ router.get("/users/scorecard", requireAuth, async (req: AuthRequest, res) => {
       workProfile: profile?.work_profile || null,
       memberSince: user?.created_at,
       qrData: JSON.stringify({ aoraneId, name: profile?.full_name, bloodGroup: profile?.blood_group }),
-      activePercent: activeData,
-      healthGrade: activeData.grade,
-      healthGradeLabel: activeData.gradeLabel,
+      activePercent: {
+        overall: activeData.pct,
+        todayPct: activeData.todayPct,
+        weekPct: activeData.weekPct,
+        daysTracked: activeData.daysTracked,
+        trend: activeData.trend,
+      },
+      healthScore: activeData.pct,
     });
   } catch (e) {
     console.error("[SCORECARD ERROR]", (e as Error).message);
-    res.status(500).json({ error: "Failed to fetch scorecard", detail: (e as Error).message });
+    res.status(500).json({ error: "Failed to fetch scorecard" });
   }
 });
 
 // ─── Daily Active Percentage ──────────────────────────────────────────────────
 router.get("/users/activity-score", requireAuth, async (req: AuthRequest, res) => {
   try {
-    const date = (req.query.date as string) || new Date().toISOString().slice(0, 10);
-    const result = await calculateActivePercent(req.userId!, date);
-
-    // Monthly active percentage: days with any exercise this calendar month
-    const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-    const daysElapsed = Math.max(1, now.getDate());
-    const monthlyRes = await pool.query(
-      `SELECT logged_at FROM exercise_logs WHERE user_id=$1 AND logged_at >= $2`,
-      [req.userId!, monthStart]
-    ).catch(() => ({ rows: [] as { logged_at: string }[] }));
-    const activeDates = new Set(monthlyRes.rows.map((r: { logged_at: string }) => new Date(r.logged_at).toISOString().slice(0, 10)));
-    const monthlyActivePct = Math.round((activeDates.size / daysElapsed) * 100);
-
-    res.json({ date, ...result, label: getActiveLabel(result.overall), monthlyActivePct });
+    const result = await getCumulativeActivePercent(req.userId!);
+    res.json({
+      overall: result.pct,
+      pct: result.pct,
+      todayPct: result.todayPct,
+      weekPct: result.weekPct,
+      daysTracked: result.daysTracked,
+      trend: result.trend,
+      label: getActiveLabel(result.pct),
+    });
   } catch {
     res.status(500).json({ error: "Failed to calculate activity score" });
   }
@@ -334,47 +340,6 @@ function getActiveLabel(pct: number): string {
   if (pct >= 30) return "Low ⚡";
   return "Inactive 😴";
 }
-
-// ─── Notification Settings (GET + PUT) ───────────────────────────────────────
-router.get("/notifications/settings", requireAuth, async (req: AuthRequest, res) => {
-  try {
-    const r = await pool.query(`SELECT notifications_enabled, medicine_reminders, water_reminders, weekly_report_email FROM user_preferences WHERE user_id=$1`, [req.userId!]);
-    const row = r.rows[0] ?? {};
-    res.json({
-      settings: {
-        notificationsEnabled: row.notifications_enabled ?? true,
-        medicineReminders:    row.medicine_reminders    ?? true,
-        waterReminders:       row.water_reminders       ?? true,
-        weeklyReportEmail:    row.weekly_report_email   ?? false,
-      }
-    });
-  } catch (e) {
-    res.status(500).json({ error: "Failed to fetch notification settings", detail: (e as Error).message });
-  }
-});
-
-router.put("/notifications/settings", requireAuth, async (req: AuthRequest, res) => {
-  try {
-    const colMap: Record<string, string> = {
-      notificationsEnabled: "notifications_enabled",
-      medicineReminders:    "medicine_reminders",
-      waterReminders:       "water_reminders",
-      weeklyReportEmail:    "weekly_report_email",
-    };
-    const fields: string[] = []; const vals: unknown[] = []; let idx = 1;
-    for (const [jsKey, col] of Object.entries(colMap)) {
-      if (Object.prototype.hasOwnProperty.call(req.body, jsKey) && req.body[jsKey] !== undefined) {
-        fields.push(`${col}=$${idx++}`); vals.push(req.body[jsKey]);
-      }
-    }
-    if (fields.length === 0) { res.json({ success: true }); return; }
-    vals.push(req.userId!);
-    await pool.query(`UPDATE user_preferences SET ${fields.join(",")} WHERE user_id=$${idx}`, vals);
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: "Failed to update notification settings", detail: (e as Error).message });
-  }
-});
 
 // ─── Search user by AORANE ID (for Admin + Business Portal) ──────────────────
 // Also supports search by name/phone for admin
@@ -401,8 +366,12 @@ router.get("/users/search", requireAuth, async (req: AuthRequest, res) => {
     }
 
     const results = await Promise.all(profileRows.map(async (p) => {
-      const activeData = await calculateActivePercent(String(p.user_id)).catch(() => ({ overall: 0 }));
+      const activeData = await getCumulativeActivePercent(String(p.user_id)).catch(() => ({ pct: 0, todayPct: 0, weekPct: 0, daysTracked: 0, trend: "stable" as const }));
       const dob = p.date_of_birth as string | null;
+      const rawPhone = String(p.phone || "");
+      const maskedPhone = rawPhone.length >= 10
+        ? rawPhone.slice(0, 2) + "******" + rawPhone.slice(-2)
+        : undefined;
       return {
         userId: p.user_id,
         aoraneId: p.aorane_id,
@@ -414,8 +383,8 @@ router.get("/users/search", requireAuth, async (req: AuthRequest, res) => {
         state: p.state,
         bmi: p.bmi,
         plan: p.plan,
-        phone: p.phone,
-        activePercent: activeData.overall,
+        phone: maskedPhone,
+        activePercent: activeData.pct,
       };
     }));
 
