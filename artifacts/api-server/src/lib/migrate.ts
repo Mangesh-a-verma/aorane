@@ -1,5 +1,6 @@
 import { pool } from "@workspace/db";
 import { logger } from "./logger";
+import { buildNewFoodSeedSQL } from "./seed-new-foods";
 
 // Safe startup migration — adds any missing columns using IF NOT EXISTS
 // Run once at server startup; safe to re-run multiple times
@@ -29,6 +30,8 @@ export async function runStartupMigrations(): Promise<void> {
     `ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS medicine_reminder_time TEXT DEFAULT '08:00,14:00,21:00'`,
     `ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS wake_up_time TEXT DEFAULT '07:00'`,
     `ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS bed_time TEXT DEFAULT '22:30'`,
+    `ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS food_reminders BOOLEAN NOT NULL DEFAULT TRUE`,
+    `ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS water_goal_glasses INTEGER NOT NULL DEFAULT 8`,
 
     // user_health_goals unique constraint
     `DO $$ BEGIN
@@ -44,6 +47,9 @@ export async function runStartupMigrations(): Promise<void> {
     `ALTER TABLE exercise_logs ADD COLUMN IF NOT EXISTS met_value NUMERIC(5,2)`,
     `ALTER TABLE exercise_logs ADD COLUMN IF NOT EXISTS input_method TEXT DEFAULT 'manual'`,
     `ALTER TABLE exercise_logs ADD COLUMN IF NOT EXISTS notes TEXT`,
+    `ALTER TABLE exercise_logs ADD COLUMN IF NOT EXISTS sets INTEGER`,
+    `ALTER TABLE exercise_logs ADD COLUMN IF NOT EXISTS reps INTEGER`,
+    `ALTER TABLE exercise_logs ADD COLUMN IF NOT EXISTS steps INTEGER`,
 
     // ── food_items table (needed for food scan + food logs) ──────────────────
     `CREATE TABLE IF NOT EXISTS food_items (
@@ -173,8 +179,14 @@ export async function runStartupMigrations(): Promise<void> {
       group_id UUID NOT NULL REFERENCES family_groups(id) ON DELETE CASCADE,
       user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       role TEXT NOT NULL DEFAULT 'member',
+      relation TEXT NOT NULL DEFAULT 'other',
+      is_minor BOOLEAN NOT NULL DEFAULT false,
+      health_share_permission TEXT NOT NULL DEFAULT 'basic',
       joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`,
+    `ALTER TABLE family_members ADD COLUMN IF NOT EXISTS relation TEXT NOT NULL DEFAULT 'other'`,
+    `ALTER TABLE family_members ADD COLUMN IF NOT EXISTS is_minor BOOLEAN NOT NULL DEFAULT false`,
+    `ALTER TABLE family_members ADD COLUMN IF NOT EXISTS health_share_permission TEXT NOT NULL DEFAULT 'basic'`,
 
     // ── subscriptions table ──────────────────────────────────────────────────
     `CREATE TABLE IF NOT EXISTS subscriptions (
@@ -391,6 +403,23 @@ export async function runStartupMigrations(): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`,
 
+    // ── enquiries (lead capture from landing / business portal) ──
+    `CREATE TABLE IF NOT EXISTS enquiries (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      type TEXT NOT NULL,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL,
+      mobile TEXT,
+      city TEXT,
+      account_type TEXT,
+      company_name TEXT,
+      message TEXT,
+      source TEXT,
+      status TEXT NOT NULL DEFAULT 'new',
+      notified_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
     // ── admin_users ───────────────────────────────────────
     `CREATE TABLE IF NOT EXISTS admin_users (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -454,6 +483,14 @@ export async function runStartupMigrations(): Promise<void> {
       monthly_report_enabled BOOLEAN DEFAULT TRUE,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`,
+    `ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS gstin TEXT`,
+    `ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS cin TEXT`,
+    `ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS pan TEXT`,
+    `ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS city TEXT`,
+    `ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS state TEXT`,
+    `ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS pincode TEXT`,
+    `ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS country TEXT DEFAULT 'India'`,
+    `ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS registered_address TEXT`,
 
     // ══════════════════════════════════════════════════════
     // BUSINESS / CORPORATE TABLES
@@ -586,9 +623,9 @@ export async function runStartupMigrations(): Promise<void> {
     // SEEDING: Default data for admin panel + platform
     // ══════════════════════════════════════════════════════
 
-    // Seed default admin user (password: admin123)
-    `INSERT INTO admin_users (email, password_hash, full_name, role)
-     VALUES ('admin@aorane.com', '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9', 'AORANE Admin', 'superadmin')
+    // Seed default admin user (password: admin123) — ON CONFLICT DO NOTHING preserves user-changed passwords
+    `INSERT INTO admin_users (email, password_hash, full_name, role, is_active)
+     VALUES ('admin@aorane.com', '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9', 'AORANE Admin', 'superadmin', TRUE)
      ON CONFLICT (email) DO NOTHING`,
 
     // Seed company settings singleton
@@ -607,7 +644,9 @@ export async function runStartupMigrations(): Promise<void> {
       ('business_portal',    'Business Portal',      'Corporate wellness dashboard', true),
       ('ai_health_coach',    'AI Health Coach',      'Personalized AI recommendations', true),
       ('whatsapp_bot',       'WhatsApp Bot',         'WhatsApp health assistant', false),
-      ('razorpay_payments',  'Razorpay Payments',    'Live payment processing', false)
+      ('razorpay_payments',  'Razorpay Payments',    'Live payment processing', false),
+      ('blood_emergency',    'Blood Emergency',      'Emergency blood request system', true),
+      ('weather_suggestions','Weather Suggestions',  'Seasonal food suggestions by weather', true)
      ON CONFLICT (key) DO NOTHING`,
 
     // Seed default AI config
@@ -646,6 +685,340 @@ export async function runStartupMigrations(): Promise<void> {
     `ALTER TABLE org_payments ADD COLUMN IF NOT EXISTS payment_type TEXT NOT NULL DEFAULT 'one_time'`,
     `ALTER TABLE org_payments ADD COLUMN IF NOT EXISTS auto_renew BOOLEAN NOT NULL DEFAULT FALSE`,
     `ALTER TABLE org_payments ADD COLUMN IF NOT EXISTS next_renewal_at TIMESTAMPTZ`,
+    // ══════════════════════════════════════════════════════
+    // ALTER TABLE: Billing invoice + verification fields
+    // ══════════════════════════════════════════════════════
+    `ALTER TABLE org_payments ADD COLUMN IF NOT EXISTS billing_cycle TEXT NOT NULL DEFAULT 'monthly'`,
+    `ALTER TABLE org_payments ADD COLUMN IF NOT EXISTS seat_price INTEGER`,
+    `ALTER TABLE org_payments ADD COLUMN IF NOT EXISTS base_amount INTEGER`,
+    `ALTER TABLE org_payments ADD COLUMN IF NOT EXISTS gst_amount INTEGER`,
+    `ALTER TABLE org_payments ADD COLUMN IF NOT EXISTS cgst_amount INTEGER`,
+    `ALTER TABLE org_payments ADD COLUMN IF NOT EXISTS sgst_amount INTEGER`,
+    `ALTER TABLE org_payments ADD COLUMN IF NOT EXISTS igst_amount INTEGER`,
+    `ALTER TABLE org_payments ADD COLUMN IF NOT EXISTS org_gstin TEXT`,
+    `ALTER TABLE org_payments ADD COLUMN IF NOT EXISTS org_state TEXT`,
+    `ALTER TABLE org_payments ADD COLUMN IF NOT EXISTS invoice_number TEXT`,
+    `ALTER TABLE org_admins ADD COLUMN IF NOT EXISTS is_email_verified BOOLEAN NOT NULL DEFAULT FALSE`,
+    `ALTER TABLE org_admins ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ`,
+    `ALTER TABLE org_admins ADD COLUMN IF NOT EXISTS phone_otp_verified BOOLEAN NOT NULL DEFAULT FALSE`,
+
+    // ── app_sessions: DAU/MAU tracking ─────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS app_sessions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      session_id TEXT NOT NULL UNIQUE,
+      device_type TEXT DEFAULT 'mobile',
+      device_model TEXT,
+      app_version TEXT,
+      platform TEXT,
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      ended_at TIMESTAMPTZ,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      duration_seconds INTEGER,
+      screen_count INTEGER DEFAULT 0
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_app_sessions_user_id ON app_sessions(user_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_app_sessions_started_at ON app_sessions(started_at)`,
+
+    // ── blood_donations: 90-day donor cooldown ─────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS blood_donations (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      donor_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      request_id UUID REFERENCES blood_emergency_requests(id) ON DELETE SET NULL,
+      blood_group TEXT NOT NULL,
+      units_donated INTEGER NOT NULL DEFAULT 1,
+      hospital_name TEXT,
+      hospital_city TEXT,
+      donated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      donor_inactive_until TIMESTAMPTZ NOT NULL,
+      confirmed_by_admin BOOLEAN NOT NULL DEFAULT FALSE,
+      notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_blood_donations_donor_id ON blood_donations(donor_id)`,
+
+    // ── blood_donors: add donor_inactive_until for 90-day cooldown enforcement ──
+    `ALTER TABLE blood_donors ADD COLUMN IF NOT EXISTS donor_inactive_until TIMESTAMPTZ`,
+
+    // ── plan_pricing: update Free/Max/Pro prices to correct values ──
+    `UPDATE plan_pricing SET monthly_price='0', yearly_price=NULL, sort_order=0 WHERE plan_key='free'`,
+    `UPDATE plan_pricing SET monthly_price='199', yearly_price='1990', badge_text='Popular', sort_order=1 WHERE plan_key='max'`,
+    `UPDATE plan_pricing SET monthly_price='249', yearly_price='2490', badge_text='Best Value', sort_order=2 WHERE plan_key='pro'`,
+
+    // ── subscriptions: add 'pending' status for in-flight Razorpay subscription creation ──
+    `DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel='pending' AND enumtypid=(SELECT oid FROM pg_type WHERE typname='subscription_status')) THEN ALTER TYPE subscription_status ADD VALUE 'pending'; END IF; END$$`,
+
+    // ── feature_flags: add smart_scan (AI Smart Scan — available to all plans) ──
+    `INSERT INTO feature_flags (key, label, description, is_enabled, enabled_for_plans)
+     VALUES ('smart_scan', 'AI Smart Scan', 'Gemini-powered food/report/medicine image scanning', true, ARRAY[]::text[])
+     ON CONFLICT (key) DO NOTHING`,
+
+    // ── feature_flags: clear plan restrictions for core features (available to all plans) ──
+    `UPDATE feature_flags SET enabled_for_plans = ARRAY[]::text[] WHERE key = 'smart_scan'`,
+    `UPDATE feature_flags SET enabled_for_plans = ARRAY[]::text[], is_enabled = true WHERE key = 'wearable_sync'`,
+
+    // ── ai_config: add smart_scan config (uses gemini-2.5-flash for vision) ──
+    `INSERT INTO ai_config (feature, label, provider, model, is_enabled)
+     VALUES ('smart_scan', 'Smart Scan AI (Vision)', 'google', 'gemini-2.5-flash', true)
+     ON CONFLICT (feature) DO NOTHING`,
+
+    // ══════════════════════════════════════════════════════
+    // CREATE: daily_suggestions table (AI Daily Coach cache)
+    // ══════════════════════════════════════════════════════
+    `CREATE TABLE IF NOT EXISTS daily_suggestions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      date TEXT NOT NULL,
+      suggestions_json JSONB NOT NULL,
+      calorie_goal_used INTEGER,
+      is_ai_generated BOOLEAN NOT NULL DEFAULT TRUE,
+      generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, date)
+    )`,
+
+    // ══════════════════════════════════════════════════════
+    // CREATE: health_predictions table (Monthly AI health risk)
+    // ══════════════════════════════════════════════════════
+    `CREATE TABLE IF NOT EXISTS health_predictions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      month TEXT NOT NULL,
+      prediction_json JSONB NOT NULL,
+      data_snapshot_json JSONB,
+      weather_context TEXT,
+      generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT health_predictions_user_month_uniq UNIQUE(user_id, month)
+    )`,
+
+    // ══════════════════════════════════════════════════════
+    // CREATE: weekly_diet_charts table (Weekly AI diet plan)
+    // ══════════════════════════════════════════════════════
+    `CREATE TABLE IF NOT EXISTS weekly_diet_charts (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      week_start TEXT NOT NULL,
+      diet_chart_json JSONB NOT NULL,
+      target_calories INTEGER,
+      generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT weekly_diet_charts_user_week_uniq UNIQUE(user_id, week_start)
+    )`,
+
+    // ── ai_config: seed missing features (health intelligence + suggestions) ──
+    `INSERT INTO ai_config (feature, label, provider, model, is_enabled) VALUES
+      ('health_prediction',  'Health Prediction AI',  'nvidia', 'meta/llama-3.3-70b-instruct', true),
+      ('weekly_diet_chart',  'Weekly Diet Chart AI',  'nvidia', 'meta/llama-3.3-70b-instruct', true),
+      ('health_suggestions', 'Daily Health Coach AI', 'nvidia', 'meta/llama-3.3-70b-instruct', true)
+     ON CONFLICT (feature) DO NOTHING`,
+
+    // ── food_scan_cache: new columns for AI food discovery workflow ───────────
+    `ALTER TABLE food_scan_cache ADD COLUMN IF NOT EXISTS is_promoted   BOOLEAN     NOT NULL DEFAULT false`,
+    `ALTER TABLE food_scan_cache ADD COLUMN IF NOT EXISTS is_rejected   BOOLEAN     NOT NULL DEFAULT false`,
+    `ALTER TABLE food_scan_cache ADD COLUMN IF NOT EXISTS source_ai     TEXT`,
+    `ALTER TABLE food_scan_cache ADD COLUMN IF NOT EXISTS name_normalized TEXT`,
+    `ALTER TABLE food_scan_cache ADD COLUMN IF NOT EXISTS reviewed_at   TIMESTAMPTZ`,
+    `ALTER TABLE food_scan_cache ADD COLUMN IF NOT EXISTS promoted_food_item_id UUID REFERENCES food_items(id) ON DELETE SET NULL`,
+
+    // ── food_items: ai_generated flag for tracking AI-promoted items ──────────
+    `ALTER TABLE food_items ADD COLUMN IF NOT EXISTS ai_generated BOOLEAN NOT NULL DEFAULT false`,
+    `ALTER TABLE food_items ADD COLUMN IF NOT EXISTS ai_source_cache_id UUID`,
+
+    // ── push_tokens: Expo push notification tokens per user ───────────────────
+    `CREATE TABLE IF NOT EXISTS push_tokens (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL,
+      token TEXT NOT NULL,
+      platform TEXT NOT NULL DEFAULT 'unknown',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, token)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_push_tokens_user ON push_tokens(user_id)`,
+
+    // ── support_tickets: user complaints / help requests → admin panel ────────
+    `CREATE TABLE IF NOT EXISTS support_tickets (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL,
+      category TEXT NOT NULL DEFAULT 'general',
+      subject TEXT NOT NULL,
+      message TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      priority TEXT NOT NULL DEFAULT 'normal',
+      user_name TEXT,
+      user_email TEXT,
+      user_phone TEXT,
+      aorane_id TEXT,
+      admin_notes TEXT,
+      resolved_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_support_tickets_status ON support_tickets(status)`,
+    `CREATE INDEX IF NOT EXISTS idx_support_tickets_user ON support_tickets(user_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_support_tickets_created ON support_tickets(created_at DESC)`,
+
+    // ── NEW FOODS: Separately curated additions (see seed-new-foods.ts) ────────
+    // These are NOT AI-generated; they are manually verified additions.
+    // Kept in seed-new-foods.ts so original migration data stays clean.
+    ...buildNewFoodSeedSQL(),
+
+    // ── feature_flags: medical_report — gated to Max / Pro / Family only ────────
+    // Free plan does NOT get medical report analysis (AI cost is high)
+    `INSERT INTO feature_flags (key, label, description, is_enabled, enabled_for_plans)
+     VALUES ('medical_report', 'Medical Report Scan', 'Gemini AI analysis of medical/lab reports — Max & Pro only', true, ARRAY['max','pro','family']::text[])
+     ON CONFLICT (key) DO UPDATE SET enabled_for_plans = ARRAY['max','pro','family']::text[], is_enabled = true`,
+
+    // ── feature_flags: smart_scan — restrict to paid plans (Max / Pro / Family) ─
+    // Free plan: cannot use Gemini image scanner (high cost). Only 5 text scans/day.
+    `UPDATE feature_flags SET enabled_for_plans = ARRAY['max','pro','family']::text[] WHERE key = 'smart_scan'`,
+
+    // ── feature_flags: meal_planner — restrict to paid plans ────────────────────
+    `INSERT INTO feature_flags (key, label, description, is_enabled, enabled_for_plans)
+     VALUES ('meal_planner', 'AI Meal Planner', 'Personalised AI diet plans — Max & Pro only', true, ARRAY['max','pro','family']::text[])
+     ON CONFLICT (key) DO UPDATE SET enabled_for_plans = ARRAY['max','pro','family']::text[], is_enabled = true`,
+
+    // ── feature_flags: health_suggestions — restrict to paid plans ───────────────
+    `INSERT INTO feature_flags (key, label, description, is_enabled, enabled_for_plans)
+     VALUES ('health_suggestions', 'AI Health Tips', 'Personalised AI health coaching — Max & Pro only', true, ARRAY['max','pro','family']::text[])
+     ON CONFLICT (key) DO UPDATE SET enabled_for_plans = ARRAY['max','pro','family']::text[], is_enabled = true`,
+
+    // ── plan_pricing: update features to accurate, detailed per-plan lists (jsonb) ─
+    `UPDATE plan_pricing SET features = '["Food logging (manual) — unlimited","AI Food Scan (text) — 5 scans/day","Water tracker & reminders","Exercise logging (basic)","7-day health history","Basic daily health score","Community forum access"]'::jsonb WHERE plan_key = 'free'`,
+
+    `UPDATE plan_pricing SET features = '["Everything in Free","AI Food Scanner (photo) — 10/day","Medical Report Scan — 5/day","AI Diet Plan — 5 plans/day","AI Health Coach & Tips — 10/day","AI Meal Swap — 20/day","Full unlimited health history","Blood sugar & BP tracking","Sleep stage analysis","Google Fit / Samsung Health sync","Priority email support"]'::jsonb WHERE plan_key = 'max'`,
+
+    `UPDATE plan_pricing SET features = '["Everything in Max","Advanced AI health predictions","Period cycle tracker","Stress & burnout AI monitoring","Personalized health goals AI","Export data (PDF & CSV)","24/7 priority support"]'::jsonb WHERE plan_key = 'pro'`,
+
+    `UPDATE plan_pricing SET features = '["4 individual member accounts","All Max features per member","Family health dashboard","Elderly health monitoring","Cross-family health comparisons","Family wellness challenges","Single billing for all members"]'::jsonb WHERE plan_key = 'family'`,
+
+    // ── blood_emergency_requests: core blood emergency table (was missing from migrations) ──
+    `CREATE TABLE IF NOT EXISTS blood_emergency_requests (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      requester_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      patient_name TEXT NOT NULL,
+      blood_group_needed TEXT NOT NULL,
+      units_needed INTEGER NOT NULL DEFAULT 1,
+      hospital_name TEXT NOT NULL,
+      hospital_address TEXT,
+      hospital_city TEXT NOT NULL,
+      hospital_state TEXT NOT NULL,
+      hospital_pincode TEXT,
+      hospital_phone TEXT,
+      doctor_name TEXT,
+      doctor_phone TEXT,
+      contact_phone TEXT NOT NULL,
+      contact_name TEXT,
+      urgency TEXT NOT NULL DEFAULT 'urgent',
+      status TEXT NOT NULL DEFAULT 'active',
+      donors_notified INTEGER NOT NULL DEFAULT 0,
+      donors_responded INTEGER NOT NULL DEFAULT 0,
+      otp_verified BOOLEAN NOT NULL DEFAULT FALSE,
+      flag_count INTEGER NOT NULL DEFAULT 0,
+      is_flagged BOOLEAN NOT NULL DEFAULT FALSE,
+      notes TEXT,
+      expires_at TIMESTAMPTZ NOT NULL,
+      fulfilled_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_blood_emergency_requests_requester ON blood_emergency_requests(requester_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_blood_emergency_requests_status ON blood_emergency_requests(status)`,
+    `CREATE INDEX IF NOT EXISTS idx_blood_emergency_requests_city ON blood_emergency_requests(hospital_city)`,
+
+    // ── blood_emergency_responses: donor responses to blood requests ──
+    `CREATE TABLE IF NOT EXISTS blood_emergency_responses (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      request_id UUID NOT NULL REFERENCES blood_emergency_requests(id) ON DELETE CASCADE,
+      donor_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      response TEXT NOT NULL,
+      contacted BOOLEAN NOT NULL DEFAULT FALSE,
+      responded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_blood_emergency_responses_request ON blood_emergency_responses(request_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_blood_emergency_responses_donor ON blood_emergency_responses(donor_id)`,
+
+    // ── blood_donors: add otp_verified and verified_at columns (were missing) ──
+    `ALTER TABLE blood_donors ADD COLUMN IF NOT EXISTS otp_verified BOOLEAN NOT NULL DEFAULT FALSE`,
+    `ALTER TABLE blood_donors ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ`,
+
+    // ── food_logs: extended micronutrient tracking ────────────────────────────
+    `ALTER TABLE food_logs ADD COLUMN IF NOT EXISTS sugar_g NUMERIC(6,2)`,
+    `ALTER TABLE food_logs ADD COLUMN IF NOT EXISTS sodium_mg NUMERIC(7,2)`,
+    `ALTER TABLE food_logs ADD COLUMN IF NOT EXISTS calcium_mg NUMERIC(7,2)`,
+    `ALTER TABLE food_logs ADD COLUMN IF NOT EXISTS iron_mg NUMERIC(6,2)`,
+    `ALTER TABLE food_logs ADD COLUMN IF NOT EXISTS vitamin_c_mg NUMERIC(6,2)`,
+    `ALTER TABLE food_logs ADD COLUMN IF NOT EXISTS vitamin_b12_mcg NUMERIC(6,2)`,
+    `ALTER TABLE food_logs ADD COLUMN IF NOT EXISTS vitamin_d_mcg NUMERIC(6,2)`,
+
+    // Fix Aorane IDs: uppercase all existing, then clear any that are still invalid format
+    `UPDATE user_profiles SET aorane_id = UPPER(aorane_id) WHERE aorane_id IS NOT NULL AND aorane_id <> UPPER(aorane_id)`,
+    `UPDATE user_profiles SET aorane_id = NULL WHERE aorane_id IS NOT NULL AND aorane_id !~ '^[A-Z0-9]{12}$'`,
+
+    // ── ad_campaigns: add slider control columns (may be missing on older production DBs) ──
+    `ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS slide_position INTEGER DEFAULT 1`,
+    `ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS target_screen TEXT DEFAULT 'dashboard'`,
+    `ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS google_ad_code TEXT`,
+    `ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS impression_count INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS click_count INTEGER NOT NULL DEFAULT 0`,
+
+    // ── enquiries: add notified_at column if missing ──
+    `ALTER TABLE enquiries ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ`,
+    // ── enquiries: add admin_notes column for internal tracking ──
+    `ALTER TABLE enquiries ADD COLUMN IF NOT EXISTS admin_notes TEXT`,
+
+    // ── plan_pricing: update family plan price to 499, fix type to individual, fix features ──
+    `UPDATE plan_pricing SET
+       monthly_price = 499,
+       yearly_price = 4990,
+       type = 'individual',
+       badge_text = '4 Members',
+       features = '["Everything in Pro","Up to 4 Family Members","Family Health Dashboard","Shared Health Reports","Member Health Alerts","Family Reminders"]'
+     WHERE plan_key = 'family'`,
+
+    // ── plan_pricing: fix pro plan features (remove Hindi) ──
+    `UPDATE plan_pricing SET
+       features = '["Everything in Max","Medical Report AI Scanner","Advanced Gemini AI","Priority Support","Unlimited History","Export PDF & CSV"]'
+     WHERE plan_key = 'pro' AND features::text LIKE '%Sab Max%'`,
+
+    // ── organizations: custom pricing columns (admin panel — custom deals) ────
+    `ALTER TABLE organizations ADD COLUMN IF NOT EXISTS custom_price_per_seat NUMERIC(10,2)`,
+    `ALTER TABLE organizations ADD COLUMN IF NOT EXISTS custom_price_note TEXT`,
+    `ALTER TABLE organizations ADD COLUMN IF NOT EXISTS custom_price_valid_until TIMESTAMPTZ`,
+    `ALTER TABLE organizations ADD COLUMN IF NOT EXISTS custom_price_applied_by TEXT`,
+
+    // ── users: custom discount columns (admin panel — custom deals) ──────────
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_discount_pct INTEGER`,
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_discount_note TEXT`,
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_discount_valid_until TIMESTAMPTZ`,
+
+    // ── promo_codes: toggle active endpoint support ───────────────────────────
+    `ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`,
+
+    // ── food_items: add vitamin_b12_mcg column (was missing — food_logs has it, food_items didn't) ──
+    `ALTER TABLE food_items ADD COLUMN IF NOT EXISTS vitamin_b12_mcg NUMERIC(6,2)`,
+
+    // ── daily_activity_scores: task-based active percentage per day ────────────
+    `CREATE TABLE IF NOT EXISTS daily_activity_scores (
+      id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id          UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      activity_date    DATE        NOT NULL,
+      food_score       SMALLINT    NOT NULL DEFAULT 0,
+      water_score      SMALLINT    NOT NULL DEFAULT 0,
+      exercise_score   SMALLINT    NOT NULL DEFAULT 0,
+      medicine_score   SMALLINT,
+      stress_score     SMALLINT    NOT NULL DEFAULT 0,
+      total_score      SMALLINT    NOT NULL DEFAULT 0,
+      max_possible     SMALLINT    NOT NULL DEFAULT 85,
+      normalized_pct   SMALLINT    NOT NULL DEFAULT 0,
+      app_opened       BOOLEAN     NOT NULL DEFAULT true,
+      calculated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, activity_date)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_daily_activity_user_date ON daily_activity_scores(user_id, activity_date DESC)`,
   ];
 
   let ok = 0; let fail = 0;
